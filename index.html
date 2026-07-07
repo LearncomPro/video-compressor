@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Video Compressor</title>
-  <script type="module" crossorigin src="./assets/index-H-rLosUf.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-CsaFAcuk.css">
+  <script type="module" crossorigin src="./assets/index-Waz0yS03.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-BQUeMCNX.css">
 </head>
 <body>
 <div class="card">
@@ -27,31 +27,42 @@
   <div class="analysis hidden" id="analysis"></div>
 
   <div class="actions hidden" id="actions">
-    <div class="row">
-      <label>Format:</label>
-      <select id="formatSelect">
-        <option value="mp4" selected>MP4</option>
-        <option value="webm">WebM</option>
-      </select>
+    <div class="mode-toggle">
+      <button class="mode-btn active" id="btnModeManual">Ręczne ustawienia</button>
+      <button class="mode-btn" id="btnModeTarget">Kompresuj do rozmiaru</button>
     </div>
-    <div class="row">
-      <label>Rozdzielczość:</label>
-      <select id="resSelect">
-        <option value="">Oryginalna</option>
-        <option value="1920">1080p</option>
-        <option value="1280" selected>720p</option>
-        <option value="854">480p</option>
-        <option value="640">360p</option>
-      </select>
+
+    <div id="manualMode">
+      <div class="row">
+        <label>Format:</label>
+        <select id="formatSelect">
+          <option value="mp4" selected>MP4</option>
+          <option value="webm">WebM</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Rozdzielczość:</label>
+        <select id="resSelect"></select>
+      </div>
+      <div class="row">
+        <label>Jakość:</label>
+        <input type="range" id="qualityRange" min="0" max="100" value="60" step="5">
+        <span class="quality-val" id="qualityVal">60%</span>
+      </div>
+      <div class="info-box">
+        80–100% wysoka jakość, 40–60% dobry kompromis, 10–30% mocna kompresja.
+      </div>
     </div>
-    <div class="row">
-      <label>Jakość:</label>
-      <input type="range" id="qualityRange" min="0" max="100" value="60" step="5">
-      <span class="quality-val" id="qualityVal">60%</span>
+
+    <div id="targetMode" class="hidden">
+      <div class="row">
+        <label>Docelowy rozmiar:</label>
+        <input type="number" id="targetSizeMB" min="1" step="1" value="50" class="target-input">
+        <span class="target-unit">MB</span>
+      </div>
+      <div id="targetPlan"></div>
     </div>
-    <div class="info-box">
-      80–100% wysoka jakość, 40–60% dobry kompromis, 10–30% mocna kompresja.
-    </div>
+
     <div class="hidden" id="estimate"></div>
     <button class="btn-primary" id="btnCompress">Kompresuj</button>
   </div>
