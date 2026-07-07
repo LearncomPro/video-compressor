@@ -90,33 +90,23 @@
     <div class="row">
       <label>Rozdzielczość:</label>
       <select id="resSelect">
-        <option value="1">Oryginalna</option>
-        <option value="0.75">75%</option>
-        <option value="0.5" selected>50%</option>
-        <option value="0.35">35%</option>
-        <option value="0.25">25%</option>
+        <option value="">Oryginalna</option>
+        <option value="1920">1080p</option>
+        <option value="1280" selected>720p</option>
+        <option value="854">480p</option>
+        <option value="640">360p</option>
       </select>
     </div>
     <div class="row">
-      <label>Bitrate wideo:</label>
-      <input type="range" id="bitrateRange" min="200" max="5000" value="1000" step="100">
-      <span class="quality-val" id="bitrateVal">1000 kb/s</span>
-    </div>
-    <div class="row">
-      <label>Prędkość:</label>
-      <select id="speedSelect">
-        <option value="1">1x (normalny)</option>
-        <option value="2">2x</option>
-        <option value="4">4x</option>
-        <option value="8">8x (najszybszy)</option>
-      </select>
+      <label>Jakość (CRF):</label>
+      <input type="range" id="crfRange" min="18" max="40" value="28" step="1">
+      <span class="quality-val" id="crfVal">28</span>
     </div>
     <div class="info-box">
-      Niższy bitrate = mniejszy plik, niższa jakość. 500 kb/s jest OK do spotkań, 1500+ do prezentacji.
-      Wyższa prędkość = szybsza kompresja (wideo jest odtwarzane przyspieszone w tle).
+      Niższa wartość CRF = lepsza jakość, większy plik.<br>
+      23 = wysoka jakość, 28 = dobra (domyślna), 35 = niska (bardzo mały plik).
     </div>
     <button class="btn-primary" id="btnCompress">Kompresuj</button>
-    <button class="btn-primary hidden" id="btnCancel" style="background:#888;">Anuluj</button>
   </div>
 
   <div class="result hidden" id="result">
@@ -138,13 +128,16 @@
   </div>
 </div>
 
-<script>
+<script type="module">
+import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
+import { toBlobURL, fetchFile } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
+
 const $ = s => document.getElementById(s);
 const dropZone = $("dropZone"), fileInput = $("fileInput"), statusEl = $("status");
 const actions = $("actions"), progressWrap = $("progressWrap"), progressBar = $("progressBar");
 const preview = $("preview"), result = $("result");
 
-let loadedFile = null, outputBlob = null, cancelled = false;
+let loadedFile = null, outputBlob = null, ffmpeg = null;
 
 function setProgress(p) { progressWrap.classList.remove("hidden"); progressBar.style.width = Math.min(100,p)+"%"; }
 function hideProgress() { progressWrap.classList.add("hidden"); progressBar.style.width = "0"; }
@@ -169,122 +162,71 @@ function handleFile(f) {
   hideProgress();
 }
 
-$("bitrateRange").addEventListener("input", () => {
-  $("bitrateVal").textContent = $("bitrateRange").value + " kb/s";
-});
+$("crfRange").addEventListener("input", () => { $("crfVal").textContent = $("crfRange").value; });
 
-$("btnCancel").addEventListener("click", () => { cancelled = true; });
+async function initFFmpeg() {
+  if (ffmpeg) return;
+  statusEl.textContent = "Ładowanie silnika kompresji (pierwszy raz ~30s)...";
+  setProgress(5);
+
+  ffmpeg = new FFmpeg();
+
+  ffmpeg.on('progress', ({ progress, time }) => {
+    const pct = Math.max(0, Math.min(100, Math.round(progress * 100)));
+    setProgress(pct);
+    statusEl.textContent = "Kompresja: " + pct + "%";
+  });
+
+  ffmpeg.on('log', ({ message }) => {
+    console.log('[ffmpeg]', message);
+  });
+
+  // Load core from unpkg with toBlobURL to avoid CORS worker issues
+  const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+  await ffmpeg.load({
+    coreURL: await toBlobURL(baseURL + '/ffmpeg-core.js', 'text/javascript'),
+    wasmURL: await toBlobURL(baseURL + '/ffmpeg-core.wasm', 'application/wasm'),
+  });
+
+  setProgress(10);
+  statusEl.textContent = "Silnik gotowy.";
+}
 
 $("btnCompress").addEventListener("click", async () => {
   if (!loadedFile) return;
-  cancelled = false;
   const btn = $("btnCompress");
-  const btnCancel = $("btnCancel");
   btn.disabled = true;
-  btnCancel.classList.remove("hidden");
   result.classList.add("hidden");
 
-  const scaleFactor = parseFloat($("resSelect").value);
-  const videoBitrate = parseInt($("bitrateRange").value) * 1000;
-  const speed = parseFloat($("speedSelect").value);
-
   try {
-    statusEl.textContent = "Przygotowanie...";
+    await initFFmpeg();
+
+    const ext = loadedFile.name.split('.').pop() || 'mp4';
+    const inputName = 'input.' + ext;
+    const outputName = 'output.mp4';
+    const crf = $("crfRange").value;
+    const res = $("resSelect").value;
+
+    statusEl.textContent = "Wczytywanie pliku do pamięci...";
     setProgress(0);
+    await ffmpeg.writeFile(inputName, await fetchFile(loadedFile));
 
-    // Create offscreen video to get dimensions
-    const sourceVideo = document.createElement("video");
-    sourceVideo.muted = true;
-    sourceVideo.playsInline = true;
-    sourceVideo.src = URL.createObjectURL(loadedFile);
+    const args = ['-i', inputName];
+    args.push('-c:v', 'libx264', '-crf', crf, '-preset', 'fast');
 
-    await new Promise((res, rej) => {
-      sourceVideo.onloadedmetadata = res;
-      sourceVideo.onerror = () => rej(new Error("Nie można załadować wideo"));
-    });
-
-    const origW = sourceVideo.videoWidth;
-    const origH = sourceVideo.videoHeight;
-    const duration = sourceVideo.duration;
-    // Make dimensions even (required by some codecs)
-    const outW = Math.round(origW * scaleFactor / 2) * 2;
-    const outH = Math.round(origH * scaleFactor / 2) * 2;
-
-    // Canvas for resampling
-    const canvas = document.createElement("canvas");
-    canvas.width = outW;
-    canvas.height = outH;
-    const ctx = canvas.getContext("2d");
-
-    // Capture stream from canvas
-    const canvasStream = canvas.captureStream(30);
-
-    // Get audio track from video
-    const audioCtx = new AudioContext();
-    const source = audioCtx.createMediaElementSource(sourceVideo);
-    const dest = audioCtx.createMediaStreamDestination();
-    source.connect(dest);
-    source.connect(audioCtx.destination); // keep audio flowing
-
-    // Combine video + audio
-    const combined = new MediaStream([
-      ...canvasStream.getVideoTracks(),
-      ...dest.stream.getAudioTracks()
-    ]);
-
-    // Choose codec
-    let mimeType = 'video/webm;codecs=vp8,opus';
-    if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')) {
-      mimeType = 'video/webm;codecs=vp9,opus';
+    if (res) {
+      args.push('-vf', 'scale=' + res + ':-2');
     }
 
-    const recorder = new MediaRecorder(combined, {
-      mimeType,
-      videoBitsPerSecond: videoBitrate,
-      audioBitsPerSecond: 128000,
-    });
+    args.push('-c:a', 'aac', '-b:a', '128k');
+    args.push('-movflags', '+faststart');
+    args.push(outputName);
 
-    const chunks = [];
-    recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    statusEl.textContent = "Kompresja w toku...";
+    await ffmpeg.exec(args);
 
-    const donePromise = new Promise(res => { recorder.onstop = res; });
-
-    recorder.start(500);
-    sourceVideo.playbackRate = speed;
-    await sourceVideo.play();
-
-    // Render loop
-    function drawFrame() {
-      if (sourceVideo.ended || sourceVideo.paused || cancelled) {
-        recorder.stop();
-        sourceVideo.pause();
-        audioCtx.close();
-        return;
-      }
-      ctx.drawImage(sourceVideo, 0, 0, outW, outH);
-      const pct = Math.round((sourceVideo.currentTime / duration) * 100);
-      setProgress(pct);
-      const remaining = ((duration - sourceVideo.currentTime) / speed);
-      statusEl.textContent = "Kompresja: " + pct + "% — pozostało ~" + Math.ceil(remaining) + "s";
-      requestAnimationFrame(drawFrame);
-    }
-    requestAnimationFrame(drawFrame);
-
-    sourceVideo.onended = () => {
-      setTimeout(() => { if (recorder.state === "recording") recorder.stop(); }, 300);
-    };
-
-    await donePromise;
-
-    if (cancelled) {
-      statusEl.textContent = "Anulowano.";
-      btn.disabled = false;
-      btnCancel.classList.add("hidden");
-      hideProgress();
-      return;
-    }
-
-    outputBlob = new Blob(chunks, { type: 'video/webm' });
+    const data = await ffmpeg.readFile(outputName);
+    outputBlob = new Blob([data.buffer], { type: 'video/mp4' });
 
     const origSize = loadedFile.size;
     const newSize = outputBlob.size;
@@ -298,13 +240,14 @@ $("btnCompress").addEventListener("click", async () => {
     result.classList.remove("hidden");
     setProgress(100);
     statusEl.textContent = "Gotowe!";
-    URL.revokeObjectURL(sourceVideo.src);
+
+    await ffmpeg.deleteFile(inputName);
+    await ffmpeg.deleteFile(outputName);
   } catch (e) {
     statusEl.textContent = "Błąd: " + e.message;
     console.error(e);
   }
   btn.disabled = false;
-  btnCancel.classList.add("hidden");
   setTimeout(hideProgress, 2000);
 });
 
@@ -313,9 +256,7 @@ $("btnDownload").addEventListener("click", () => {
   const base = loadedFile.name.replace(/\.[^.]+$/, '');
   const url = URL.createObjectURL(outputBlob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = base + "_compressed.webm";
-  a.click();
+  a.href = url; a.download = base + "_compressed.mp4"; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 });
 </script>
