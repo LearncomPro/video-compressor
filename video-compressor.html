@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Video Compressor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ffmpeg/0.12.10/umd/ffmpeg.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ffmpeg/0.12.10/umd/814.ffmpeg.min.js" defer></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #f4f5f8; color: #1a1a2e; padding: 24px;
+  }
+  .card {
+    width: 100%; max-width: 560px; background: #fff;
+    border-radius: 14px; padding: 36px 32px;
+    box-shadow: 0 2px 12px rgba(0,0,0,.07);
+  }
+  h1 { font-size: 22px; font-weight: 700; letter-spacing: -.02em; margin-bottom: 4px; }
+  .sub { font-size: 13px; color: #888; margin-bottom: 24px; }
+  .drop {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    border: 2px dashed #c5c9d6; border-radius: 12px; padding: 44px 20px;
+    cursor: pointer; transition: all .2s; margin-bottom: 20px;
+  }
+  .drop.over { border-color: #e5593f; background: rgba(229,89,63,.05); }
+  .drop svg { margin-bottom: 10px; }
+  .drop .name { font-size: 14px; font-weight: 500; }
+  .drop .size { font-size: 12px; color: #999; margin-top: 4px; }
+  .drop input { display: none; }
+  .status { font-size: 13px; color: #e5593f; margin-bottom: 16px; min-height: 18px; }
+  .actions { display: flex; flex-direction: column; gap: 14px; }
+  .row { display: flex; align-items: center; gap: 10px; font-size: 13px; flex-wrap: wrap; }
+  .row label { min-width: 70px; font-weight: 500; }
+  .row select, .row input[type=range] { flex: 1; }
+  select {
+    padding: 8px 12px; border-radius: 6px; border: 1px solid #d1d5db;
+    font-size: 13px; background: #fff;
+  }
+  input[type=range] { accent-color: #e5593f; }
+  .quality-val { min-width: 36px; text-align: center; font-weight: 600; }
+  .btn-primary {
+    padding: 12px 0; border-radius: 8px; border: none;
+    background: #e5593f; color: #fff; font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: background .2s; margin-top: 4px;
+  }
+  .btn-primary:hover { background: #d04832; }
+  .btn-primary:disabled { background: #a0aec0; cursor: default; }
+  .progress { width: 100%; height: 6px; background: #e2e5ea; border-radius: 3px; margin-bottom: 12px; overflow: hidden; }
+  .progress-bar { height: 100%; background: #e5593f; border-radius: 3px; transition: width .3s; width: 0; }
+  .result {
+    margin-top: 16px; padding: 16px; background: #f0faf0; border-radius: 10px;
+    font-size: 13px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .result .stats { display: flex; gap: 20px; flex-wrap: wrap; }
+  .result .stat { display: flex; flex-direction: column; }
+  .result .stat-label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: .04em; }
+  .result .stat-value { font-size: 16px; font-weight: 700; }
+  .btn-download {
+    padding: 10px 20px; border-radius: 8px; border: none;
+    background: #38a169; color: #fff; font-size: 14px; font-weight: 600;
+    cursor: pointer; align-self: flex-start;
+  }
+  .btn-download:hover { background: #2f855a; }
+  .hidden { display: none; }
+  .info-box {
+    margin-top: 12px; padding: 12px 14px; background: #fff8f0; border-radius: 8px;
+    font-size: 12px; color: #9c6a30; line-height: 1.5; border: 1px solid #f0e0c8;
+  }
+  video { width: 100%; border-radius: 8px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Video Compressor</h1>
+  <p class="sub">Kompresja wideo w przeglądarce — pliki nie opuszczają Twojego komputera.</p>
+
+  <label class="drop" id="dropZone">
+    <input type="file" accept="video/*" id="fileInput">
+    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#8b90a0" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+    <span class="name" id="fileName">Upuść wideo lub kliknij</span>
+    <span class="size hidden" id="fileSize"></span>
+  </label>
+
+  <video id="preview" class="hidden" controls muted></video>
+
+  <div class="progress hidden" id="progressWrap"><div class="progress-bar" id="progressBar"></div></div>
+  <p class="status" id="status"></p>
+
+  <div class="actions hidden" id="actions">
+    <div class="row">
+      <label>Format:</label>
+      <select id="formatSelect">
+        <option value="mp4">MP4</option>
+        <option value="webm">WebM</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Rozdzielczość:</label>
+      <select id="resSelect">
+        <option value="">Oryginalna</option>
+        <option value="1920">1080p</option>
+        <option value="1280" selected>720p</option>
+        <option value="854">480p</option>
+        <option value="640">360p</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Jakość:</label>
+      <input type="range" id="qualityRange" min="18" max="40" value="28" step="1">
+      <span class="quality-val" id="qualityVal">28</span>
+    </div>
+    <div class="info-box">
+      Jakość: niższa wartość = lepsza jakość, większy plik.<br>
+      23 = wysoka, 28 = dobra (domyślna), 35 = niska (bardzo mały plik).
+    </div>
+    <button class="btn-primary" id="btnCompress">Kompresuj</button>
+  </div>
+
+  <div class="result hidden" id="result">
+    <div class="stats">
+      <div class="stat">
+        <span class="stat-label">Przed</span>
+        <span class="stat-value" id="sizeBefore">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Po</span>
+        <span class="stat-value" id="sizeAfter">—</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Redukcja</span>
+        <span class="stat-value" id="reduction">—</span>
+      </div>
+    </div>
+    <button class="btn-download" id="btnDownload">Pobierz skompresowane wideo</button>
+  </div>
+</div>
+
+<script type="module">
+import { FFmpeg } from 'https://esm.sh/@ffmpeg/ffmpeg@0.12.10';
+import { fetchFile, toBlobURL } from 'https://esm.sh/@ffmpeg/util@0.12.1';
+
+const $ = (s) => document.getElementById(s);
+const dropZone = $("dropZone");
+const fileInput = $("fileInput");
+const statusEl = $("status");
+const actions = $("actions");
+const progressWrap = $("progressWrap");
+const progressBar = $("progressBar");
+const preview = $("preview");
+const result = $("result");
+
+let loadedFile = null;
+let ffmpeg = null;
+let outputBlob = null;
+
+function setProgress(pct) {
+  progressWrap.classList.remove("hidden");
+  progressBar.style.width = Math.min(100, pct) + "%";
+}
+function hideProgress() { progressWrap.classList.add("hidden"); progressBar.style.width = "0"; }
+function fmtSize(bytes) {
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + " KB";
+  return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+
+// drag & drop
+dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("over"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("over"));
+dropZone.addEventListener("drop", (e) => {
+  e.preventDefault(); dropZone.classList.remove("over");
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener("change", () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
+
+function handleFile(f) {
+  if (!f.type.startsWith("video/")) { statusEl.textContent = "Wybierz plik wideo."; return; }
+  loadedFile = f;
+  $("fileName").textContent = f.name;
+  $("fileSize").textContent = fmtSize(f.size);
+  $("fileSize").classList.remove("hidden");
+  preview.src = URL.createObjectURL(f);
+  preview.classList.remove("hidden");
+  actions.classList.remove("hidden");
+  result.classList.add("hidden");
+  statusEl.textContent = "";
+  hideProgress();
+}
+
+$("qualityRange").addEventListener("input", () => {
+  $("qualityVal").textContent = $("qualityRange").value;
+});
+
+async function initFFmpeg() {
+  if (ffmpeg) return;
+  statusEl.textContent = "Ładowanie silnika kompresji (pierwszy raz może potrwać)...";
+  setProgress(10);
+  ffmpeg = new FFmpeg();
+  ffmpeg.on('progress', ({ progress }) => {
+    const pct = Math.round(progress * 100);
+    setProgress(pct);
+    statusEl.textContent = "Kompresja: " + pct + "%";
+  });
+  const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+  await ffmpeg.load({
+    coreURL: await toBlobURL(baseURL + '/ffmpeg-core.js', 'text/javascript'),
+    wasmURL: await toBlobURL(baseURL + '/ffmpeg-core.wasm', 'application/wasm'),
+  });
+}
+
+$("btnCompress").addEventListener("click", async () => {
+  if (!loadedFile) return;
+  const btn = $("btnCompress");
+  btn.disabled = true;
+  result.classList.add("hidden");
+
+  try {
+    await initFFmpeg();
+
+    const ext = loadedFile.name.split('.').pop() || 'mp4';
+    const inputName = 'input.' + ext;
+    const format = $("formatSelect").value;
+    const outputName = 'output.' + format;
+    const crf = $("qualityRange").value;
+    const res = $("resSelect").value;
+
+    statusEl.textContent = "Wczytywanie pliku...";
+    setProgress(0);
+    await ffmpeg.writeFile(inputName, await fetchFile(loadedFile));
+
+    const args = ['-i', inputName];
+
+    if (format === 'mp4') {
+      args.push('-c:v', 'libx264', '-crf', crf, '-preset', 'fast');
+    } else {
+      args.push('-c:v', 'libvpx-vp9', '-crf', crf, '-b:v', '0');
+    }
+
+    if (res) {
+      args.push('-vf', 'scale=' + res + ':-2');
+    }
+
+    args.push('-c:a', 'aac', '-b:a', '128k', outputName);
+
+    statusEl.textContent = "Kompresja w toku...";
+    await ffmpeg.exec(args);
+
+    const data = await ffmpeg.readFile(outputName);
+    const mimeType = format === 'mp4' ? 'video/mp4' : 'video/webm';
+    outputBlob = new Blob([data.buffer], { type: mimeType });
+
+    const origSize = loadedFile.size;
+    const newSize = outputBlob.size;
+    const pctReduction = Math.round((1 - newSize / origSize) * 100);
+
+    $("sizeBefore").textContent = fmtSize(origSize);
+    $("sizeAfter").textContent = fmtSize(newSize);
+    $("reduction").textContent = (pctReduction > 0 ? "-" : "+") + Math.abs(pctReduction) + "%";
+    $("reduction").style.color = pctReduction > 0 ? "#38a169" : "#e53e3e";
+
+    result.classList.remove("hidden");
+    setProgress(100);
+    statusEl.textContent = "Gotowe!";
+
+    // cleanup
+    await ffmpeg.deleteFile(inputName);
+    await ffmpeg.deleteFile(outputName);
+  } catch (e) {
+    statusEl.textContent = "Błąd: " + e.message;
+    console.error(e);
+  }
+  btn.disabled = false;
+  setTimeout(hideProgress, 2000);
+});
+
+$("btnDownload").addEventListener("click", () => {
+  if (!outputBlob) return;
+  const format = $("formatSelect").value;
+  const base = loadedFile.name.replace(/\.[^.]+$/, '');
+  const url = URL.createObjectURL(outputBlob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = base + "_compressed." + format;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+});
+</script>
+</body>
+</html>
