@@ -37,7 +37,7 @@
     font-size: 13px; background: #fff; flex: 1;
   }
   input[type=range] { flex: 1; accent-color: #e5593f; }
-  .quality-val { min-width: 50px; text-align: center; font-weight: 600; font-size: 13px; }
+  .quality-val { min-width: 40px; text-align: center; font-weight: 600; font-size: 13px; }
   .btn-primary {
     padding: 12px 0; border-radius: 8px; border: none;
     background: #e5593f; color: #fff; font-size: 14px; font-weight: 600;
@@ -98,13 +98,12 @@
       </select>
     </div>
     <div class="row">
-      <label>Jakość (CRF):</label>
-      <input type="range" id="crfRange" min="18" max="40" value="28" step="1">
-      <span class="quality-val" id="crfVal">28</span>
+      <label>Jakość:</label>
+      <input type="range" id="qualityRange" min="0" max="100" value="60" step="5">
+      <span class="quality-val" id="qualityVal">60%</span>
     </div>
     <div class="info-box">
-      Niższa wartość CRF = lepsza jakość, większy plik.<br>
-      23 = wysoka jakość, 28 = dobra (domyślna), 35 = niska (bardzo mały plik).
+      Wyższa jakość = lepszy obraz, większy plik. 80–100% to wysoka jakość, 40–60% to dobry kompromis, 10–30% to mocna kompresja.
     </div>
     <button class="btn-primary" id="btnCompress">Kompresuj</button>
   </div>
@@ -128,10 +127,124 @@
   </div>
 </div>
 
-<script type="module">
-import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
-import { toBlobURL, fetchFile } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
+<!-- Inline worker code to avoid CORS issues on GitHub Pages -->
+<script id="ffmpeg-worker-code" type="text/js-worker">
+const FFMessageType = { LOAD:"LOAD", EXEC:"EXEC", WRITE_FILE:"WRITE_FILE", READ_FILE:"READ_FILE", DELETE_FILE:"DELETE_FILE", RENAME:"RENAME", CREATE_DIR:"CREATE_DIR", LIST_DIR:"LIST_DIR", DELETE_DIR:"DELETE_DIR", MOUNT:"MOUNT", UNMOUNT:"UNMOUNT", ERROR:"ERROR", LOG:"LOG", PROGRESS:"PROGRESS" };
+const CORE_URL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js";
+const ERROR_UNKNOWN_MESSAGE_TYPE = new Error("unknown message type");
+const ERROR_NOT_LOADED = new Error("ffmpeg is not loaded, call `await ffmpeg.load()` first");
+const ERROR_IMPORT_FAILURE = new Error("failed to import ffmpeg-core.js");
+let ffmpeg;
+const load = async ({ coreURL: _coreURL, wasmURL: _wasmURL, workerURL: _workerURL }) => {
+    const first = !ffmpeg;
+    try {
+        if (!_coreURL) _coreURL = CORE_URL;
+        importScripts(_coreURL);
+    } catch {
+        if (!_coreURL) _coreURL = CORE_URL.replace('/umd/', '/esm/');
+        self.createFFmpegCore = (await import(_coreURL)).default;
+        if (!self.createFFmpegCore) throw ERROR_IMPORT_FAILURE;
+    }
+    const coreURL = _coreURL;
+    const wasmURL = _wasmURL ? _wasmURL : _coreURL.replace(/.js$/g, ".wasm");
+    const workerURL = _workerURL ? _workerURL : _coreURL.replace(/.js$/g, ".worker.js");
+    ffmpeg = await self.createFFmpegCore({
+        mainScriptUrlOrBlob: `${coreURL}#${btoa(JSON.stringify({ wasmURL, workerURL }))}`,
+    });
+    ffmpeg.setLogger((data) => self.postMessage({ type: FFMessageType.LOG, data }));
+    ffmpeg.setProgress((data) => self.postMessage({ type: FFMessageType.PROGRESS, data }));
+    return first;
+};
+const exec = ({ args, timeout = -1 }) => { ffmpeg.setTimeout(timeout); ffmpeg.exec(...args); const ret = ffmpeg.ret; ffmpeg.reset(); return ret; };
+const writeFile = ({ path, data }) => { ffmpeg.FS.writeFile(path, data); return true; };
+const readFile = ({ path, encoding }) => ffmpeg.FS.readFile(path, { encoding });
+const deleteFile = ({ path }) => { ffmpeg.FS.unlink(path); return true; };
+const rename = ({ oldPath, newPath }) => { ffmpeg.FS.rename(oldPath, newPath); return true; };
+const createDir = ({ path }) => { ffmpeg.FS.mkdir(path); return true; };
+const listDir = ({ path }) => { const names = ffmpeg.FS.readdir(path); const nodes = []; for (const name of names) { const stat = ffmpeg.FS.stat(`${path}/${name}`); const isDir = ffmpeg.FS.isDir(stat.mode); nodes.push({ name, isDir }); } return nodes; };
+const deleteDir = ({ path }) => { ffmpeg.FS.rmdir(path); return true; };
+const mount = ({ fsType, options, mountPoint }) => { const str = fsType; const fs = ffmpeg.FS.filesystems[str]; if (!fs) return false; ffmpeg.FS.mount(fs, options, mountPoint); return true; };
+const unmount = ({ mountPoint }) => { ffmpeg.FS.unmount(mountPoint); return true; };
+self.onmessage = async ({ data: { id, type, data: _data } }) => {
+    const trans = [];
+    let data;
+    try {
+        if (type !== FFMessageType.LOAD && !ffmpeg) throw ERROR_NOT_LOADED;
+        switch (type) {
+            case FFMessageType.LOAD: data = await load(_data); break;
+            case FFMessageType.EXEC: data = exec(_data); break;
+            case FFMessageType.WRITE_FILE: data = writeFile(_data); break;
+            case FFMessageType.READ_FILE: data = readFile(_data); break;
+            case FFMessageType.DELETE_FILE: data = deleteFile(_data); break;
+            case FFMessageType.RENAME: data = rename(_data); break;
+            case FFMessageType.CREATE_DIR: data = createDir(_data); break;
+            case FFMessageType.LIST_DIR: data = listDir(_data); break;
+            case FFMessageType.DELETE_DIR: data = deleteDir(_data); break;
+            case FFMessageType.MOUNT: data = mount(_data); break;
+            case FFMessageType.UNMOUNT: data = unmount(_data); break;
+            default: throw ERROR_UNKNOWN_MESSAGE_TYPE;
+        }
+    } catch (e) { self.postMessage({ id, type: FFMessageType.ERROR, data: e.toString() }); return; }
+    if (data instanceof Uint8Array) { trans.push(data.buffer); }
+    self.postMessage({ id, type, data }, trans);
+};
+</script>
 
+<script type="module">
+// ---- Minimal FFmpeg wrapper that uses the inline worker ----
+const FFMessageType = { LOAD:"LOAD", EXEC:"EXEC", WRITE_FILE:"WRITE_FILE", READ_FILE:"READ_FILE", DELETE_FILE:"DELETE_FILE", RENAME:"RENAME", CREATE_DIR:"CREATE_DIR", LIST_DIR:"LIST_DIR", DELETE_DIR:"DELETE_DIR", MOUNT:"MOUNT", UNMOUNT:"UNMOUNT", ERROR:"ERROR", LOG:"LOG", PROGRESS:"PROGRESS" };
+
+class FFmpegClient {
+  constructor() {
+    this._worker = null;
+    this._id = 0;
+    this._resolves = {};
+    this._logCb = null;
+    this._progressCb = null;
+  }
+  on(event, cb) {
+    if (event === 'log') this._logCb = cb;
+    if (event === 'progress') this._progressCb = cb;
+  }
+  async load(config) {
+    // Create worker from inline script
+    const code = document.getElementById('ffmpeg-worker-code').textContent;
+    const blob = new Blob([code], { type: 'text/javascript' });
+    const url = URL.createObjectURL(blob);
+    this._worker = new Worker(url);
+    this._worker.onmessage = ({ data: { id, type, data } }) => {
+      if (type === FFMessageType.LOG && this._logCb) { this._logCb(data); return; }
+      if (type === FFMessageType.PROGRESS && this._progressCb) { this._progressCb(data); return; }
+      if (this._resolves[id]) { this._resolves[id](data); delete this._resolves[id]; }
+    };
+    return this._send(FFMessageType.LOAD, config);
+  }
+  exec(args) { return this._send(FFMessageType.EXEC, { args }); }
+  writeFile(path, data) { return this._send(FFMessageType.WRITE_FILE, { path, data }, data instanceof Uint8Array ? [data.buffer] : []); }
+  readFile(path) { return this._send(FFMessageType.READ_FILE, { path }); }
+  deleteFile(path) { return this._send(FFMessageType.DELETE_FILE, { path }); }
+  _send(type, data, trans = []) {
+    return new Promise(resolve => {
+      const id = this._id++;
+      this._resolves[id] = resolve;
+      this._worker.postMessage({ id, type, data }, trans);
+    });
+  }
+}
+
+// ---- Helpers ----
+async function toBlobURL(url, mimeType) {
+  const resp = await fetch(url);
+  const body = await resp.blob();
+  const blob = new Blob([body], { type: mimeType });
+  return URL.createObjectURL(blob);
+}
+async function fetchFile(file) {
+  const buf = await file.arrayBuffer();
+  return new Uint8Array(buf);
+}
+
+// ---- UI ----
 const $ = s => document.getElementById(s);
 const dropZone = $("dropZone"), fileInput = $("fileInput"), statusEl = $("status");
 const actions = $("actions"), progressWrap = $("progressWrap"), progressBar = $("progressBar");
@@ -142,6 +255,9 @@ let loadedFile = null, outputBlob = null, ffmpeg = null;
 function setProgress(p) { progressWrap.classList.remove("hidden"); progressBar.style.width = Math.min(100,p)+"%"; }
 function hideProgress() { progressWrap.classList.add("hidden"); progressBar.style.width = "0"; }
 function fmtSize(b) { return b < 1024*1024 ? (b/1024).toFixed(0)+" KB" : (b/1024/1024).toFixed(1)+" MB"; }
+
+// Quality slider: 0-100% maps to CRF 40-18 (inverted, lower CRF = better quality)
+function qualityToCRF(q) { return Math.round(40 - (q / 100) * 22); }
 
 dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("over"); });
 dropZone.addEventListener("dragleave", () => dropZone.classList.remove("over"));
@@ -162,26 +278,25 @@ function handleFile(f) {
   hideProgress();
 }
 
-$("crfRange").addEventListener("input", () => { $("crfVal").textContent = $("crfRange").value; });
+$("qualityRange").addEventListener("input", () => {
+  $("qualityVal").textContent = $("qualityRange").value + "%";
+});
 
 async function initFFmpeg() {
   if (ffmpeg) return;
   statusEl.textContent = "Ładowanie silnika kompresji (pierwszy raz ~30s)...";
   setProgress(5);
 
-  ffmpeg = new FFmpeg();
+  ffmpeg = new FFmpegClient();
 
-  ffmpeg.on('progress', ({ progress, time }) => {
+  ffmpeg.on('progress', ({ progress }) => {
     const pct = Math.max(0, Math.min(100, Math.round(progress * 100)));
     setProgress(pct);
     statusEl.textContent = "Kompresja: " + pct + "%";
   });
 
-  ffmpeg.on('log', ({ message }) => {
-    console.log('[ffmpeg]', message);
-  });
+  ffmpeg.on('log', ({ message }) => { console.log('[ffmpeg]', message); });
 
-  // Load core from unpkg with toBlobURL to avoid CORS worker issues
   const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
   await ffmpeg.load({
     coreURL: await toBlobURL(baseURL + '/ffmpeg-core.js', 'text/javascript'),
@@ -204,23 +319,17 @@ $("btnCompress").addEventListener("click", async () => {
     const ext = loadedFile.name.split('.').pop() || 'mp4';
     const inputName = 'input.' + ext;
     const outputName = 'output.mp4';
-    const crf = $("crfRange").value;
+    const quality = parseInt($("qualityRange").value);
+    const crf = qualityToCRF(quality).toString();
     const res = $("resSelect").value;
 
     statusEl.textContent = "Wczytywanie pliku do pamięci...";
     setProgress(0);
     await ffmpeg.writeFile(inputName, await fetchFile(loadedFile));
 
-    const args = ['-i', inputName];
-    args.push('-c:v', 'libx264', '-crf', crf, '-preset', 'fast');
-
-    if (res) {
-      args.push('-vf', 'scale=' + res + ':-2');
-    }
-
-    args.push('-c:a', 'aac', '-b:a', '128k');
-    args.push('-movflags', '+faststart');
-    args.push(outputName);
+    const args = ['-i', inputName, '-c:v', 'libx264', '-crf', crf, '-preset', 'fast'];
+    if (res) args.push('-vf', 'scale=' + res + ':-2');
+    args.push('-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', outputName);
 
     statusEl.textContent = "Kompresja w toku...";
     await ffmpeg.exec(args);
